@@ -71,6 +71,7 @@ func kubeconfig() (*rest.Config, error) {
 	return clientcmd.BuildConfigFromFlags("", kubeconfigPath)
 }
 
+//nolint:funlen,gocognit,gocyclo
 func run() error {
 	config, err := kubeconfig()
 	if err != nil {
