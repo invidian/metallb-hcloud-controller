@@ -102,10 +102,14 @@ func run() error {
 	for _, event := range events.Items {
 		namespaceName := event.Regarding.Namespace
 		serviceName := event.Regarding.Name
-		if _, ok := eventsByServiceNamespace[namespaceName]; !ok {
-			eventsByServiceNamespace[namespaceName] = map[string][]v1.Event{}
+
+		eventsByService, ok := eventsByServiceNamespace[namespaceName]
+		if !ok {
+			eventsByService = map[string][]v1.Event{}
 		}
-		eventsByServiceNamespace[namespaceName][serviceName] = append(eventsByServiceNamespace[namespaceName][serviceName], event)
+
+		eventsByService[serviceName] = append(eventsByService[serviceName], event)
+		eventsByServiceNamespace[namespaceName] = eventsByService
 	}
 
 	// Print debug information.
@@ -156,7 +160,9 @@ func run() error {
 			}
 
 			for _, lbIngress := range service.Status.LoadBalancer.Ingress {
-				log.Printf("Service %s in namespace %q has IP %q and is announced by node %q", serviceName, namespaceName, lbIngress.IP, nodeName)
+				log.Printf("Service %s in namespace %q has IP %q and is announced by node %q",
+					serviceName, namespaceName, lbIngress.IP, nodeName)
+
 				nodeAnnouncingByIP[lbIngress.IP] = nodeName
 			}
 		}
@@ -202,7 +208,8 @@ func run() error {
 		}
 
 		if fip.Server != nil && fip.Server.ID != server.ID {
-			log.Printf("Floating IP %q (%s) is assigned to server %d, should be assigned to %d", fip.IP, fip.Name, fip.Server.ID, server.ID)
+			log.Printf("Floating IP %q (%s) is assigned to server %d, "+
+				"should be assigned to %d", fip.IP, fip.Name, fip.Server.ID, server.ID)
 		}
 
 		if fip.Server == nil || fip.Server.ID != server.ID {
