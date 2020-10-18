@@ -20,7 +20,9 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		panic(err)
+		log.Printf("Running failed: %v", err)
+
+		os.Exit(1)
 	}
 }
 
