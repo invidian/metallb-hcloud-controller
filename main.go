@@ -98,6 +98,7 @@ func run() error {
 
 	// Group events per service/namespace.
 	eventsByServiceNamespace := map[string]map[string][]v1.Event{}
+
 	for _, event := range events.Items {
 		namespaceName := event.Regarding.Namespace
 		serviceName := event.Regarding.Name
@@ -116,6 +117,7 @@ func run() error {
 
 	// Pick only latest event from each service/namespace.
 	eventByServiceNamespace := map[string]map[string]v1.Event{}
+
 	for namespaceName, eventsByService := range eventsByServiceNamespace {
 		if _, ok := eventByServiceNamespace[namespaceName]; !ok {
 			eventByServiceNamespace[namespaceName] = map[string]v1.Event{}
@@ -126,6 +128,7 @@ func run() error {
 				latestEvent, ok := eventByServiceNamespace[namespaceName][serviceName]
 				if !ok {
 					eventByServiceNamespace[namespaceName][serviceName] = event
+
 					continue
 				}
 
