@@ -171,7 +171,6 @@ func run() error {
 		serverName := nodeName + os.Getenv(nodeSuffixEnv)
 		log.Printf("Node %q becomes server %q", nodeName, serverName)
 
-		// TODO: Drain pagination.
 		server, _, err := client.Server.Get(context.TODO(), serverName)
 		if err != nil {
 			return fmt.Errorf("getting server %q: %w", serverName, err)
