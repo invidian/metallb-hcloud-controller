@@ -24,6 +24,14 @@ func main() {
 	}
 }
 
+type genericError string
+
+func (e genericError) Error() string {
+	return string(e)
+}
+
+const errGeneric genericError = "generic error"
+
 const (
 	hcloudTokenEnv = "HCLOUD_TOKEN"
 	kubeconfigEnv  = "KUBECONFIG"
@@ -42,7 +50,7 @@ func kubeconfigPath() (string, error) {
 		return filepath.Join(home, ".kube", "config"), nil
 	}
 
-	return "", fmt.Errorf("unable to select kubeconfig file to use")
+	return "", fmt.Errorf("unable to select kubeconfig file to use: %w", errGeneric)
 }
 
 func kubeconfig() (*rest.Config, error) {
@@ -84,7 +92,7 @@ func run() error {
 	}
 
 	if len(events.Items) == 0 {
-		return fmt.Errorf("no events found. Is MetalLB functional?")
+		return fmt.Errorf("no events found. Is MetalLB functional: %w", errGeneric)
 	}
 
 	// Group events per service/namespace.
@@ -183,7 +191,7 @@ func run() error {
 	for ip, fip := range floatingIPByIP {
 		server := serverAnnouncingByIP[ip]
 		if server == nil {
-			return fmt.Errorf("server for IP %q not found", ip)
+			return fmt.Errorf("server for IP %q not found: %w", ip, errGeneric)
 		}
 
 		if fip.Server == nil {
