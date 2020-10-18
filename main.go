@@ -3,260 +3,167 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
-	"log"
+	"net/http"
 	"os"
-	"path/filepath"
-	"regexp"
+	"os/signal"
+	"syscall"
+	"time"
 
-	"github.com/hetznercloud/hcloud-go/hcloud"
-	v1 "k8s.io/api/events/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/util/homedir"
+	"github.com/invidian/metallb-hcloud-controller/pkg/assigners/hcloud"
+	"github.com/invidian/metallb-hcloud-controller/pkg/controller"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"k8s.io/klog/v2"
 )
-
-func main() {
-	if err := run(); err != nil {
-		log.Printf("Running failed: %v", err)
-
-		os.Exit(1)
-	}
-}
-
-type genericError string
-
-func (e genericError) Error() string {
-	return string(e)
-}
-
-const errGeneric genericError = "generic error"
 
 const (
 	hcloudTokenEnv = "HCLOUD_TOKEN"
 	kubeconfigEnv  = "KUBECONFIG"
 	nodeSuffixEnv  = "NODE_SUFFIX"
+	dryRunEnv      = "DRY_RUN"
 
-	metalLBEventFieldSelector = "reason=nodeAssigned"
-	metalLBEventMessageRegexp = `^announcing from node "(\S+)"$`
+	// The only expected HTTP server clients are kubelet performing liveness probes and
+	// Prometheus scraping the metrics, so it is not even that important to shut down gracefully.
+	httpShutdownTimeout = 5 * time.Second
 )
 
-func kubeconfigPath() (string, error) {
-	if p := os.Getenv(kubeconfigEnv); p != "" {
-		return p, nil
-	}
+func main() {
+	if err := run(); err != nil {
+		klog.Infof("Running failed: %v", err)
 
-	if home := homedir.HomeDir(); home != "" {
-		return filepath.Join(home, ".kube", "config"), nil
+		os.Exit(1)
 	}
-
-	return "", fmt.Errorf("unable to select kubeconfig file to use: %w", errGeneric)
 }
 
-func kubeconfig() (*rest.Config, error) {
-	config, err := rest.InClusterConfig()
-	if err == nil {
-		return config, nil
-	}
-
-	if !errors.Is(err, rest.ErrNotInCluster) {
-		return nil, fmt.Errorf("getting in cluster config: %w", err)
-	}
-
-	kubeconfigPath, err := kubeconfigPath()
-	if err != nil {
-		return nil, fmt.Errorf("selecting kubeconfig: %w", err)
-	}
-
-	return clientcmd.BuildConfigFromFlags("", kubeconfigPath)
-}
-
-type floatingIPSyncer struct {
-	clientset *kubernetes.Clientset
-	hcloud    *hcloud.Client
-}
-
-func newHcloudClient() (*hcloud.Client, error) {
-	token := os.Getenv(hcloudTokenEnv)
-	if token == "" {
-		return nil, fmt.Errorf("environment variable %q is empty: %w", hcloudTokenEnv, errGeneric)
-	}
-
-	client := hcloud.NewClient(hcloud.WithToken(token))
-
-	if _, _, err := client.Server.List(context.TODO(), hcloud.ServerListOpts{}); err != nil {
-		return nil, fmt.Errorf("verifying Hetzner Cloud client by listing servers: %w", err)
-	}
-
-	return client, nil
-}
-
-func newFloatingIPSyncer() (*floatingIPSyncer, error) {
-	client, err := newHcloudClient()
-	if err != nil {
-		return nil, fmt.Errorf("initializing Hetzner Cloud client: %w", err)
-	}
-
-	config, err := kubeconfig()
-	if err != nil {
-		return nil, fmt.Errorf("getting kubeconfig: %w", err)
-	}
-
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, fmt.Errorf("creating clientset: %w", err)
-	}
-
-	return &floatingIPSyncer{
-		clientset: clientset,
-		hcloud:    client,
-	}, nil
-}
-
-//nolint:funlen,gocognit,gocyclo
 func run() error {
-	syncer, err := newFloatingIPSyncer()
+	if err := initializeKlog(); err != nil {
+		return fmt.Errorf("initializing klog for logging: %w", err)
+	}
+
+	done := make(chan struct{})
+
+	hcloudAssigner, err := hcloudAssignerWithMetrics(done)
 	if err != nil {
-		return fmt.Errorf("setting up syncer: %w", err)
+		return fmt.Errorf("initializing Hetzner Cloud Assigner with Prometheus metrics: %w", err)
 	}
 
-	events, err := syncer.clientset.EventsV1().Events("").List(context.TODO(), metav1.ListOptions{
-		FieldSelector: metalLBEventFieldSelector,
-	})
+	config := controller.MetalLBHCloudControllerConfig{ //nolint:exhaustivestruct
+		KubeconfigPath: os.Getenv(kubeconfigEnv),
+		StopCh:         done,
+		Assigners: map[string]controller.Assigner{
+			"hcloud": hcloudAssigner,
+		},
+	}
+
+	// Start controller.
+	controller, err := config.New()
 	if err != nil {
-		return fmt.Errorf("listing events: %w", err)
+		return fmt.Errorf("starting controller: %w", err)
 	}
 
-	if len(events.Items) == 0 {
-		return fmt.Errorf("no events found. Is MetalLB functional: %w", errGeneric)
-	}
+	// Block until controller shuts down.
+	<-controller.ShutdownCh
 
-	// Group events per service/namespace.
-	eventsByServiceNamespace := map[string]map[string][]v1.Event{}
+	return nil
+}
 
-	for _, event := range events.Items {
-		namespaceName := event.Regarding.Namespace
-		serviceName := event.Regarding.Name
+func initializeKlog() error {
+	klog.InitFlags(nil)
 
-		eventsByService, ok := eventsByServiceNamespace[namespaceName]
-		if !ok {
-			eventsByService = map[string][]v1.Event{}
-		}
-
-		eventsByService[serviceName] = append(eventsByService[serviceName], event)
-		eventsByServiceNamespace[namespaceName] = eventsByService
-	}
-
-	// Print debug information.
-	for namespaceName, eventsByService := range eventsByServiceNamespace {
-		for serviceName, events := range eventsByService {
-			log.Printf("Found %d events for service %q in namespace %q \n", len(events), serviceName, namespaceName)
-		}
-	}
-
-	// Pick only latest event from each service/namespace.
-	eventByServiceNamespace := map[string]map[string]v1.Event{}
-
-	for namespaceName, eventsByService := range eventsByServiceNamespace {
-		if _, ok := eventByServiceNamespace[namespaceName]; !ok {
-			eventByServiceNamespace[namespaceName] = map[string]v1.Event{}
-		}
-
-		for serviceName, events := range eventsByService {
-			for _, event := range events {
-				latestEvent, ok := eventByServiceNamespace[namespaceName][serviceName]
-				if !ok {
-					eventByServiceNamespace[namespaceName][serviceName] = event
-
-					continue
-				}
-
-				latestEventTime := latestEvent.CreationTimestamp
-				if latestEventTime.Before(&event.CreationTimestamp) {
-					eventByServiceNamespace[namespaceName][serviceName] = event
-				}
-			}
-		}
-	}
-
-	re := regexp.MustCompile(metalLBEventMessageRegexp)
-
-	// Build a list of IP addresses to be assigned for specific nodes.
-	nodeAnnouncingByIP := map[string]string{}
-
-	for namespaceName, eventsByService := range eventByServiceNamespace {
-		for serviceName, event := range eventsByService {
-			rs := re.FindStringSubmatch(event.Note)
-			nodeName := rs[1]
-
-			servicesClient := syncer.clientset.CoreV1().Services(namespaceName)
-
-			service, err := servicesClient.Get(context.TODO(), serviceName, metav1.GetOptions{})
-			if err != nil {
-				return fmt.Errorf(`getting service "%s/%s": %w`, serviceName, namespaceName, err)
-			}
-
-			for _, lbIngress := range service.Status.LoadBalancer.Ingress {
-				log.Printf("Service %s in namespace %q has IP %q and is announced by node %q",
-					serviceName, namespaceName, lbIngress.IP, nodeName)
-
-				nodeAnnouncingByIP[lbIngress.IP] = nodeName
-			}
-		}
-	}
-
-	// Build list of server objects to use for assignment.
-	serverAnnouncingByIP := map[string]*hcloud.Server{}
-
-	for ip, nodeName := range nodeAnnouncingByIP {
-		serverName := nodeName + os.Getenv(nodeSuffixEnv)
-		log.Printf("Node %q becomes server %q", nodeName, serverName)
-
-		server, _, err := syncer.hcloud.Server.Get(context.TODO(), serverName)
-		if err != nil {
-			return fmt.Errorf("getting server %q: %w", serverName, err)
-		}
-
-		serverAnnouncingByIP[ip] = server
-	}
-
-	// Build list of floating IPs to be assigned.
-	floatingIPByIP := map[string]*hcloud.FloatingIP{}
-
-	fips, _, err := syncer.hcloud.FloatingIP.List(context.TODO(), hcloud.FloatingIPListOpts{})
-	if err != nil {
-		return fmt.Errorf("listing floating IPs: %w", err)
-	}
-
-	for _, fip := range fips {
-		floatingIPByIP[fip.IP.String()] = fip
-	}
-
-	for ip, fip := range floatingIPByIP {
-		server := serverAnnouncingByIP[ip]
-		if server == nil {
-			return fmt.Errorf("server for IP %q not found: %w", ip, errGeneric)
-		}
-
-		if fip.Server == nil {
-			log.Printf("Floating IP %q (%s) has no server assigned", fip.IP, fip.Name)
-		}
-
-		if fip.Server != nil && fip.Server.ID != server.ID {
-			log.Printf("Floating IP %q (%s) is assigned to server %d, "+
-				"should be assigned to %d", fip.IP, fip.Name, fip.Server.ID, server.ID)
-		}
-
-		if fip.Server == nil || fip.Server.ID != server.ID {
-			log.Printf("Assigning floating IP %q (%s) to server %q\n", fip.IP, fip.Name, server.Name)
-
-			if _, _, err := syncer.hcloud.FloatingIP.Assign(context.TODO(), fip, server); err != nil {
-				return fmt.Errorf("assigning floating IP %q (%s) to server %q: %w", fip.Name, fip.IP, server.Name, err)
-			}
-		}
+	if err := flag.Set("v", "4"); err != nil {
+		return fmt.Errorf("setting flag %q: %w", "v", err)
 	}
 
 	return nil
+}
+
+func hcloudAssignerWithMetrics(done chan struct{}) (controller.Assigner, error) {
+	reg, err := defaultPrometheusRegisterer()
+	if err != nil {
+		return nil, fmt.Errorf("building default Prometheus metrics register: %w", err)
+	}
+
+	server := startMetricsServer(reg)
+
+	// Handle signals.
+	go handleInterrupts(server, done)
+
+	hcloudAssignerConfig := hcloud.AssignerConfig{ //nolint:exhaustivestruct
+		AuthToken:           os.Getenv(hcloudTokenEnv),
+		NodeSuffix:          os.Getenv(nodeSuffixEnv),
+		PrometheusRegistrer: reg,
+		DryRun:              os.Getenv(dryRunEnv) != "",
+	}
+
+	hcloudAssigner, err := hcloudAssignerConfig.New()
+	if err != nil {
+		return nil, fmt.Errorf("creating Hetzner Cloud assigner: %w", err)
+	}
+
+	return hcloudAssigner, nil
+}
+
+func defaultPrometheusRegisterer() (*prometheus.Registry, error) {
+	reg := prometheus.NewRegistry()
+
+	if err := reg.Register(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{})); err != nil {
+		return nil, fmt.Errorf("registering process collector: %w", err)
+	}
+
+	if err := reg.Register(prometheus.NewGoCollector()); err != nil {
+		return nil, fmt.Errorf("registering Go collector: %w", err)
+	}
+
+	return reg, nil
+}
+
+func startMetricsServer(gatherer prometheus.Gatherer) *http.Server {
+	mux := http.NewServeMux()
+
+	mux.Handle("/metrics", promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{}))
+
+	server := &http.Server{ //nolint:exhaustivestruct
+		Addr:    ":2112",
+		Handler: mux,
+	}
+
+	// Start HTTP server.
+	go func() {
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			klog.Errorf("listening for metrics: %v", err)
+		}
+	}()
+
+	return server
+}
+
+func handleInterrupts(server *http.Server, done chan struct{}) {
+	// signChan channel is used to transmit signal notifications.
+	signChan := make(chan os.Signal, 1)
+
+	// Catch and relay certain signal(s) to signChan channel.
+	signal.Notify(signChan, os.Interrupt, syscall.SIGTERM)
+
+	// Blocking until a signal is sent over signChan channel.
+	<-signChan
+
+	klog.Infof("Received shutdown signal, shutting down HTTP server...")
+
+	// Create a new context with a timeout duration. It helps allowing
+	// timeout duration to all active connections in order for them to
+	// finish their job. Any connections that wont complete within the
+	// allowed timeout duration gets halted.
+	ctx, cancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		klog.Errorf("Failed shutting down HTTP server: %v", err)
+	}
+
+	klog.Infof("Finished shutting down HTTP server")
+
+	// Actual shutdown trigger.
+	close(done)
 }

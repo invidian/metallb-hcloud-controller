@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-operator-grafana-metallb-hcloud-controller
+  namespace: prometheus-operator
+  labels:
+    grafana_dashboard: "true"
+data:
+  metallb-hcloud-controller.json: {{ .Files.Get "dashboards/grafana.json" | toJson }}

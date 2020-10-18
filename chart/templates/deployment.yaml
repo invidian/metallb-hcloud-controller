@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metallb-hcloud-controller
+  labels:
+    app: metallb-hcloud-controller
+spec:
+  selector:
+    matchLabels:
+      app: metallb-hcloud-controller
+  template:
+    metadata:
+      labels:
+        app: metallb-hcloud-controller
+    spec:
+      serviceAccountName: metallb-hcloud-controller
+      containers:
+      - name: metallb-hcloud-controller
+        image: quay.io/invidian/metallb-hcloud-controller:latest
+        imagePullPolicy: Always
+        env:
+        - name: HCLOUD_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: metallb-hcloud-controller
+              key: HCLOUD_TOKEN
+        - name: NODE_SUFFIX
+          value: {{ .Values.nodeSuffix }}
+        resources:
+          requests:
+            cpu: 25m
+            memory: 10Mi
+          limits:
+            memory: 50Mi

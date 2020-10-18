@@ -1,0 +1,15 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: metallb-hcloud-controller
+  labels:
+    app: metallb-hcloud-controller
+spec:
+  endpoints:
+  - port: metrics-http
+  namespaceSelector:
+    matchNames:
+    - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      app: metallb-hcloud-controller
