@@ -73,21 +73,56 @@ func kubeconfig() (*rest.Config, error) {
 	return clientcmd.BuildConfigFromFlags("", kubeconfigPath)
 }
 
-//nolint:funlen,gocognit,gocyclo
-func run() error {
+type floatingIPSyncer struct {
+	clientset *kubernetes.Clientset
+	hcloud    *hcloud.Client
+}
+
+func newHcloudClient() (*hcloud.Client, error) {
+	token := os.Getenv(hcloudTokenEnv)
+	if token == "" {
+		return nil, fmt.Errorf("environment variable %q is empty: %w", hcloudTokenEnv, errGeneric)
+	}
+
+	client := hcloud.NewClient(hcloud.WithToken(token))
+
+	if _, _, err := client.Server.List(context.TODO(), hcloud.ServerListOpts{}); err != nil {
+		return nil, fmt.Errorf("verifying Hetzner Cloud client by listing servers: %w", err)
+	}
+
+	return client, nil
+}
+
+func newFloatingIPSyncer() (*floatingIPSyncer, error) {
+	client, err := newHcloudClient()
+	if err != nil {
+		return nil, fmt.Errorf("initializing Hetzner Cloud client: %w", err)
+	}
+
 	config, err := kubeconfig()
 	if err != nil {
-		return fmt.Errorf("getting kubeconfig: %w", err)
+		return nil, fmt.Errorf("getting kubeconfig: %w", err)
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		return fmt.Errorf("creating clientset: %w", err)
+		return nil, fmt.Errorf("creating clientset: %w", err)
 	}
 
-	log.Printf("Getting events with selector %q from all namespaces...", metalLBEventFieldSelector)
+	return &floatingIPSyncer{
+		clientset: clientset,
+		hcloud:    client,
+	}, nil
+}
 
-	events, err := clientset.EventsV1().Events("").List(context.TODO(), metav1.ListOptions{
+//nolint:funlen,gocognit,gocyclo
+func run() error {
+	syncer, err := newFloatingIPSyncer()
+	if err != nil {
+		return fmt.Errorf("setting up syncer: %w", err)
+	}
+
+	events, err := syncer.clientset.EventsV1().Events("").List(context.TODO(), metav1.ListOptions{
 		FieldSelector: metalLBEventFieldSelector,
 	})
 	if err != nil {
@@ -156,7 +191,9 @@ func run() error {
 			rs := re.FindStringSubmatch(event.Note)
 			nodeName := rs[1]
 
-			service, err := clientset.CoreV1().Services(namespaceName).Get(context.TODO(), serviceName, metav1.GetOptions{})
+			servicesClient := syncer.clientset.CoreV1().Services(namespaceName)
+
+			service, err := servicesClient.Get(context.TODO(), serviceName, metav1.GetOptions{})
 			if err != nil {
 				return fmt.Errorf(`getting service "%s/%s": %w`, serviceName, namespaceName, err)
 			}
@@ -170,8 +207,6 @@ func run() error {
 		}
 	}
 
-	client := hcloud.NewClient(hcloud.WithToken(os.Getenv(hcloudTokenEnv)))
-
 	// Build list of server objects to use for assignment.
 	serverAnnouncingByIP := map[string]*hcloud.Server{}
 
@@ -179,7 +214,7 @@ func run() error {
 		serverName := nodeName + os.Getenv(nodeSuffixEnv)
 		log.Printf("Node %q becomes server %q", nodeName, serverName)
 
-		server, _, err := client.Server.Get(context.TODO(), serverName)
+		server, _, err := syncer.hcloud.Server.Get(context.TODO(), serverName)
 		if err != nil {
 			return fmt.Errorf("getting server %q: %w", serverName, err)
 		}
@@ -190,7 +225,7 @@ func run() error {
 	// Build list of floating IPs to be assigned.
 	floatingIPByIP := map[string]*hcloud.FloatingIP{}
 
-	fips, _, err := client.FloatingIP.List(context.TODO(), hcloud.FloatingIPListOpts{})
+	fips, _, err := syncer.hcloud.FloatingIP.List(context.TODO(), hcloud.FloatingIPListOpts{})
 	if err != nil {
 		return fmt.Errorf("listing floating IPs: %w", err)
 	}
@@ -217,7 +252,7 @@ func run() error {
 		if fip.Server == nil || fip.Server.ID != server.ID {
 			log.Printf("Assigning floating IP %q (%s) to server %q\n", fip.IP, fip.Name, server.Name)
 
-			if _, _, err := client.FloatingIP.Assign(context.TODO(), fip, server); err != nil {
+			if _, _, err := syncer.hcloud.FloatingIP.Assign(context.TODO(), fip, server); err != nil {
 				return fmt.Errorf("assigning floating IP %q (%s) to server %q: %w", fip.Name, fip.IP, server.Name, err)
 			}
 		}
