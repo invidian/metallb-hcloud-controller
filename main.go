@@ -10,7 +10,7 @@ import (
 	"regexp"
 
 	"github.com/hetznercloud/hcloud-go/hcloud"
-	"k8s.io/api/events/v1"
+	v1 "k8s.io/api/events/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
