@@ -42,7 +42,7 @@ func (c AssignerConfig) New() (controller.Assigner, error) {
 		return nil, fmt.Errorf("initializing Hetzner Cloud client: %w", err)
 	}
 
-	ha := &hcloudAssigner{ //nolint:exhaustivestruct
+	ha := &hcloudAssigner{
 		config: c,
 		client: client,
 		logger: c.Logger,
