@@ -445,10 +445,9 @@ func (se serviceEvents) currentNode() (string, error) {
 
 	re := regexp.MustCompile(metalLBEventMessageRegexp)
 
-	expectedMatches := 2
 	rs := re.FindStringSubmatch(event.Message)
 
-	if len(rs) != expectedMatches {
+	if expectedMatches := 2; len(rs) != expectedMatches {
 		return "", fmt.Errorf("%q did not match %q, got: %v: %w", event.Message, metalLBEventMessageRegexp, rs, errGeneric)
 	}
 
