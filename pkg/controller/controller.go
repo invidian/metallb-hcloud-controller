@@ -304,6 +304,8 @@ func (c metalLBHCloudController) syncOnce() error {
 	if len(events) == 0 {
 		c.logger.Errorf("No events received. "+
 			"Is MetalLB publishing events matching field selector %q?", metalLBEventFieldSelector)
+
+		return nil
 	}
 
 	serviceEvents := groupEventsByService(events)
