@@ -49,6 +49,9 @@ const (
 
 	// Regular expression for extracting node name from MetalLB events.
 	metalLBEventMessageRegexp = `^announcing from node "(\S+)"$`
+
+	// Label for sync error reason.
+	reasonMetricLabel = "reason"
 )
 
 // Assigner describes an interface which must be implemented by cloud platform specific
@@ -121,19 +124,19 @@ type metalLBHCloudController struct {
 	eventsLister   listercorev1.EventLister
 	serviceLister  listercorev1.ServiceLister
 	eventsBuffer   chan struct{}
-	eventsReceived prometheus.Gauge
-	syncErrors     prometheus.Counter
+	eventsReceived prometheus.Counter
+	syncErrors     *prometheus.CounterVec
 }
 
 func (cc MetalLBHCloudControllerConfig) withMetrics(clientset *kubernetes.Clientset) (*metalLBHCloudController, error) {
-	syncErrors := prometheus.NewCounter(prometheus.CounterOpts{ //nolint:exhaustivestruct
+	syncErrors := prometheus.NewCounterVec(prometheus.CounterOpts{ //nolint:exhaustivestruct
 		Help:      "The total number of sync errors.",
 		Namespace: "metallb_hcloud_controller",
 		Subsystem: "sync",
 		Name:      "errors_total",
-	})
+	}, []string{reasonMetricLabel})
 
-	eventsReceived := prometheus.NewGauge(prometheus.GaugeOpts{ //nolint:exhaustivestruct
+	eventsReceived := prometheus.NewCounter(prometheus.CounterOpts{ //nolint:exhaustivestruct
 		Help:      "Number of MetalLB events received in last sync period",
 		Namespace: "metallb_hcloud_controller",
 		Subsystem: "metallb",
@@ -341,11 +344,15 @@ func (c metalLBHCloudController) syncOnce() error {
 
 	events, err := c.eventsLister.List(labels.Everything())
 	if err != nil {
+		if se := c.syncErrors; se != nil {
+			se.With(prometheus.Labels{reasonMetricLabel: "listing events"}).Inc()
+		}
+
 		return fmt.Errorf("getting events: %w", err)
 	}
 
 	if g := c.eventsReceived; g != nil {
-		g.Set(float64(len(events)))
+		g.Add(float64(len(events)))
 	}
 
 	if len(events) == 0 {
@@ -353,7 +360,7 @@ func (c metalLBHCloudController) syncOnce() error {
 			"Is MetalLB publishing events matching field selector %q?", metalLBEventFieldSelector)
 
 		if se := c.syncErrors; se != nil {
-			se.Inc()
+			se.With(prometheus.Labels{reasonMetricLabel: "no events received"}).Inc()
 		}
 
 		return nil
@@ -376,6 +383,10 @@ func (c metalLBHCloudController) syncOnce() error {
 	// as a key.
 	nodeAnnouncingByIP, err := c.nodeAnnouncingByIP(serviceEvents)
 	if err != nil {
+		if se := c.syncErrors; se != nil {
+			se.With(prometheus.Labels{reasonMetricLabel: "building IPs list"}).Inc()
+		}
+
 		return fmt.Errorf("building list of IPs with announcing nodes: %w", err)
 	}
 
