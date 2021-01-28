@@ -31,7 +31,7 @@ type AssignerConfig struct {
 	// Optional logger to use. If nil, controller.Klogger will be used.
 	Logger controller.Logger
 
-	// If true, no assignemnt changes will be actually performed. They will only be logged.
+	// If true, no assignment changes will be actually performed. They will only be logged.
 	DryRun bool
 }
 
@@ -181,7 +181,7 @@ func (n *hcloudAssigner) serverFromNodeName(ctx context.Context, name string) (*
 //
 // If assigner runs in dry-run mode, no actual assignment will be performed.
 //
-// If assignemtn succeeds, given Floating IP object is updated to reflect new assignment, so assignment
+// If assignment succeeds, given Floating IP object is updated to reflect new assignment, so assignment
 // is not done multiple times.
 func (n *hcloudAssigner) ensureFloatingIPAssigned(ctx context.Context, fip *hcloud.FloatingIP, s *hcloud.Server) error {
 	if fip.Server == nil {

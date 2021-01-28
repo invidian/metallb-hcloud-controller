@@ -153,7 +153,7 @@ func handleInterrupts(server *http.Server, done chan struct{}) {
 
 	// Create a new context with a timeout duration. It helps allowing
 	// timeout duration to all active connections in order for them to
-	// finish their job. Any connections that wont complete within the
+	// finish their job. Any connections that won't complete within the
 	// allowed timeout duration gets halted.
 	ctx, cancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
 	defer cancel()
