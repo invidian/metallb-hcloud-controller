@@ -44,7 +44,12 @@ func run() error {
 
 	done := make(chan struct{})
 
-	hcloudAssigner, err := hcloudAssignerWithMetrics(done)
+	reg, err := defaultPrometheusRegisterer()
+	if err != nil {
+		return fmt.Errorf("building default Prometheus metrics register: %w", err)
+	}
+
+	hcloudAssigner, err := hcloudAssignerWithMetrics(reg, done)
 	if err != nil {
 		return fmt.Errorf("initializing Hetzner Cloud Assigner with Prometheus metrics: %w", err)
 	}
@@ -55,6 +60,7 @@ func run() error {
 		Assigners: map[string]controller.Assigner{
 			"hcloud": hcloudAssigner,
 		},
+		PrometheusRegistrer: reg,
 	}
 
 	// Start controller.
@@ -79,12 +85,7 @@ func initializeKlog() error {
 	return nil
 }
 
-func hcloudAssignerWithMetrics(done chan struct{}) (controller.Assigner, error) {
-	reg, err := defaultPrometheusRegisterer()
-	if err != nil {
-		return nil, fmt.Errorf("building default Prometheus metrics register: %w", err)
-	}
-
+func hcloudAssignerWithMetrics(reg *prometheus.Registry, done chan struct{}) (controller.Assigner, error) {
 	server := startMetricsServer(reg)
 
 	// Handle signals.

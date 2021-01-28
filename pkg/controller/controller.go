@@ -11,6 +11,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -73,6 +74,9 @@ type MetalLBHCloudControllerConfig struct {
 	// Channel on which controller will look for shutdown signal. If nil, channel will be
 	// initialized and it is up to the caller to close it.
 	StopCh <-chan struct{}
+
+	// Optional Prometheus Registerer to register controller metrics.
+	PrometheusRegistrer prometheus.Registerer
 }
 
 // New Validates controller configuration and starts the controller.
@@ -109,14 +113,49 @@ func (cc MetalLBHCloudControllerConfig) New() (*metalLBHCloudController, error) 
 
 // metalLBHCloudController contains actual implementation of the controller.
 type metalLBHCloudController struct {
-	clientset     *kubernetes.Clientset
-	logger        Logger
-	config        MetalLBHCloudControllerConfig
-	StopCh        <-chan struct{}
-	ShutdownCh    chan struct{}
-	eventsLister  listercorev1.EventLister
-	serviceLister listercorev1.ServiceLister
-	eventsBuffer  chan struct{}
+	clientset      *kubernetes.Clientset
+	logger         Logger
+	config         MetalLBHCloudControllerConfig
+	StopCh         <-chan struct{}
+	ShutdownCh     chan struct{}
+	eventsLister   listercorev1.EventLister
+	serviceLister  listercorev1.ServiceLister
+	eventsBuffer   chan struct{}
+	eventsReceived prometheus.Gauge
+	syncErrors     prometheus.Counter
+}
+
+func (cc MetalLBHCloudControllerConfig) withMetrics(clientset *kubernetes.Clientset) (*metalLBHCloudController, error) {
+	syncErrors := prometheus.NewCounter(prometheus.CounterOpts{ //nolint:exhaustivestruct
+		Help:      "The total number of sync errors.",
+		Namespace: "metallb_hcloud_controller",
+		Subsystem: "sync",
+		Name:      "errors_total",
+	})
+
+	eventsReceived := prometheus.NewGauge(prometheus.GaugeOpts{ //nolint:exhaustivestruct
+		Help:      "Number of MetalLB events received in last sync period",
+		Namespace: "metallb_hcloud_controller",
+		Subsystem: "metallb",
+		Name:      "events_received_total",
+	})
+
+	metrics := []prometheus.Collector{
+		syncErrors,
+		eventsReceived,
+	}
+
+	for _, metric := range metrics {
+		if err := cc.PrometheusRegistrer.Register(metric); err != nil {
+			return nil, fmt.Errorf("registering metrics: %w", err)
+		}
+	}
+
+	return &metalLBHCloudController{ //nolint:exhaustivestruct
+		clientset:      clientset,
+		syncErrors:     syncErrors,
+		eventsReceived: eventsReceived,
+	}, nil
 }
 
 // buildDependencies builds sub-objects which controller depends on and returns partially
@@ -132,9 +171,13 @@ func (cc MetalLBHCloudControllerConfig) buildDependencies() (*metalLBHCloudContr
 		return nil, fmt.Errorf("creating clientset: %w", err)
 	}
 
-	return &metalLBHCloudController{ //nolint:exhaustivestruct
-		clientset: clientset,
-	}, nil
+	if cc.PrometheusRegistrer == nil {
+		return &metalLBHCloudController{ //nolint:exhaustivestruct
+			clientset: clientset,
+		}, nil
+	}
+
+	return cc.withMetrics(clientset)
 }
 
 // kubeconfig builds REST config from given kubeconfig path.
@@ -279,7 +322,7 @@ func (c metalLBHCloudController) syncLoop() {
 		}
 
 		if err := c.syncOnce(); err != nil {
-			c.logger.Errorf("Error occured while syncing: %v", err)
+			c.logger.Errorf("Error occurred while syncing: %v", err)
 		}
 	}
 
@@ -301,9 +344,17 @@ func (c metalLBHCloudController) syncOnce() error {
 		return fmt.Errorf("getting events: %w", err)
 	}
 
+	if g := c.eventsReceived; g != nil {
+		g.Set(float64(len(events)))
+	}
+
 	if len(events) == 0 {
 		c.logger.Errorf("No events received. "+
 			"Is MetalLB publishing events matching field selector %q?", metalLBEventFieldSelector)
+
+		if se := c.syncErrors; se != nil {
+			se.Inc()
+		}
 
 		return nil
 	}
