@@ -42,37 +42,55 @@ func run() error {
 		return fmt.Errorf("initializing klog for logging: %w", err)
 	}
 
-	done := make(chan struct{})
+	config, err := buildConfig()
+	if err != nil {
+		return fmt.Errorf("building controller config: %w", err)
+	}
 
+	shutdownCh, err := startController(config)
+	if err != nil {
+		return fmt.Errorf("starting controller: %w", err)
+	}
+
+	blockUntilControllerShutsDown(shutdownCh)
+
+	return nil
+}
+
+func blockUntilControllerShutsDown(shutdownCh chan struct{}) {
+	<-shutdownCh
+}
+
+func startController(config *controller.MetalLBHCloudControllerConfig) (chan struct{}, error) {
+	controller, err := config.New()
+	if err != nil {
+		return nil, fmt.Errorf("creating controller from config: %w", err)
+	}
+
+	return controller.ShutdownCh, nil
+}
+
+func buildConfig() (*controller.MetalLBHCloudControllerConfig, error) {
 	reg, err := defaultPrometheusRegisterer()
 	if err != nil {
-		return fmt.Errorf("building default Prometheus metrics register: %w", err)
+		return nil, fmt.Errorf("building default Prometheus metrics register: %w", err)
 	}
+
+	done := make(chan struct{})
 
 	hcloudAssigner, err := hcloudAssignerWithMetrics(reg, done)
 	if err != nil {
-		return fmt.Errorf("initializing Hetzner Cloud Assigner with Prometheus metrics: %w", err)
+		return nil, fmt.Errorf("initializing Hetzner Cloud Assigner with Prometheus metrics: %w", err)
 	}
 
-	config := controller.MetalLBHCloudControllerConfig{ //nolint:exhaustivestruct
+	return &controller.MetalLBHCloudControllerConfig{ //nolint:exhaustivestruct
 		KubeconfigPath: os.Getenv(kubeconfigEnv),
 		StopCh:         done,
 		Assigners: map[string]controller.Assigner{
 			"hcloud": hcloudAssigner,
 		},
 		PrometheusRegistrer: reg,
-	}
-
-	// Start controller.
-	controller, err := config.New()
-	if err != nil {
-		return fmt.Errorf("starting controller: %w", err)
-	}
-
-	// Block until controller shuts down.
-	<-controller.ShutdownCh
-
-	return nil
+	}, nil
 }
 
 func initializeKlog() error {
@@ -88,7 +106,6 @@ func initializeKlog() error {
 func hcloudAssignerWithMetrics(reg *prometheus.Registry, done chan struct{}) (controller.Assigner, error) {
 	server := startMetricsServer(reg)
 
-	// Handle signals.
 	go handleInterrupts(server, done)
 
 	hcloudAssignerConfig := hcloud.AssignerConfig{ //nolint:exhaustivestruct
@@ -130,14 +147,15 @@ func startMetricsServer(gatherer prometheus.Gatherer) *http.Server {
 		Handler: mux,
 	}
 
-	// Start HTTP server.
-	go func() {
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			klog.Errorf("listening for metrics: %v", err)
-		}
-	}()
+	go startHTTPServer(server)
 
 	return server
+}
+
+func startHTTPServer(server *http.Server) {
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		klog.Errorf("listening for metrics: %v", err)
+	}
 }
 
 func handleInterrupts(server *http.Server, done chan struct{}) {
