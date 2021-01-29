@@ -356,12 +356,8 @@ func (c metalLBHCloudController) syncOnce() error {
 	}
 
 	if len(events) == 0 {
-		c.logger.Errorf("No events received. "+
+		c.logger.Infof("No events received. "+
 			"Is MetalLB publishing events matching field selector %q?", metalLBEventFieldSelector)
-
-		if se := c.syncErrors; se != nil {
-			se.With(prometheus.Labels{reasonMetricLabel: "no events received"}).Inc()
-		}
 
 		return nil
 	}
