@@ -217,7 +217,7 @@ func kubeconfigPath(path string) (string, error) {
 		return filepath.Join(home, ".kube", "config"), nil
 	}
 
-	return "", fmt.Errorf("unable to select kubeconfig file to use: %w", errGeneric)
+	return "", fmt.Errorf("selecting kubeconfig file to use: %w", errGeneric)
 }
 
 // setSefaults initializes controller fields.
@@ -479,7 +479,7 @@ func (se serviceEvents) ips(svcLister listercorev1.ServiceLister) ([]string, err
 	}
 
 	if svc == nil {
-		return nil, fmt.Errorf("couldn't find service %q in namespace %q: %w", se.name, se.namespace, errGeneric)
+		return nil, fmt.Errorf("finding service %q in namespace %q: %w", se.name, se.namespace, errGeneric)
 	}
 
 	ips := []string{}
