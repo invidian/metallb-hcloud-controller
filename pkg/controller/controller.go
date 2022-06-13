@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -444,15 +445,37 @@ func groupEventsByService(events []*v1.Event) []serviceEvents {
 // lastEvent sorts events associated with a given service and returns newest one.
 //
 // serviceEvents must have at least one event populated.
-func (se serviceEvents) lastEvent() *v1.Event {
+func (se serviceEvents) lastEvent() (*v1.Event, error) {
+	var err error
+
 	// Sort events descending by creation timestamp, from newest to oldest.
 	sort.Slice(se.events, func(i, j int) bool {
-		nextEventTime := se.events[j].LastTimestamp
+		if err != nil {
+			return false
+		}
 
-		return nextEventTime.Before(&se.events[i].LastTimestamp)
+		nextResourceVersion, err := strconv.Atoi(se.events[j].ResourceVersion)
+		if err != nil {
+			err = fmt.Errorf("parsing resource version %q as number: %w", se.events[j].ResourceVersion, err)
+
+			return false
+		}
+
+		currentResourceVersion, err := strconv.Atoi(se.events[i].ResourceVersion)
+		if err != nil {
+			err = fmt.Errorf("parsing resource version %q as number: %w", se.events[i].ResourceVersion, err)
+
+			return false
+		}
+
+		return nextResourceVersion < currentResourceVersion
 	})
 
-	return se.events[0]
+	if err != nil {
+		return nil, fmt.Errorf("sorting events: %w", err)
+	}
+
+	return se.events[0], nil
 }
 
 // ips returns external IP addresses associated with a given Service.
@@ -499,7 +522,10 @@ func (se serviceEvents) ips(svcLister listercorev1.ServiceLister) ([]string, err
 //
 // Returned node name should have Floating IPs assigned returned by ips().
 func (se serviceEvents) currentNode() (string, error) {
-	event := se.lastEvent()
+	event, err := se.lastEvent()
+	if err != nil {
+		return "", fmt.Errorf("getting last event: %w", err)
+	}
 
 	re := regexp.MustCompile(metalLBEventMessageRegexp)
 
