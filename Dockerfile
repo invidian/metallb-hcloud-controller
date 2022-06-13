@@ -1,4 +1,4 @@
-FROM golang:1.15.7-alpine3.13 as builder
+FROM golang:1.18.3-alpine3.16 as builder
 
 # Install:
 # - Git for pulling dependencies with go modules.
