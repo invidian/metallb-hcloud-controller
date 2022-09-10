@@ -1,0 +1,29 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: metallb-hcloud-controller
+rules:
+- apiGroups: ['']
+  # List, watch and get services to be able to extract
+  # LoadBalancer IP address from the service.
+  # #
+  resources: ['services']
+  verbs: ['get', 'list', 'watch']
+- apiGroups: ['']
+  # List watch and get events to be able to follow
+  # MetalLB node announcement events.
+  resources: ['events']
+  verbs: ['get', 'list', 'watch']
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: metallb-hcloud-controller
+subjects:
+- kind: ServiceAccount
+  name: metallb-hcloud-controller
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: metallb-hcloud-controller
+  apiGroup: rbac.authorization.k8s.io
