@@ -209,6 +209,10 @@ func (n *hcloudAssigner) ensureFloatingIPAssigned(ctx context.Context, fip *hclo
 		return fmt.Errorf("assigning floating IP %q (%s) to server %q: %w", fip.Name, fip.IP, s.Name, err)
 	}
 
+	if fip.Server == nil {
+		fip.Server = &hcloud.Server{}
+	}
+
 	// Override FloatingIP field to reflect assignment in local list to avoid assigning
 	// same Floating IP to single node multiple times.
 	fip.Server.ID = s.ID
