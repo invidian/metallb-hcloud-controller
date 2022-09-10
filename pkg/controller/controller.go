@@ -49,7 +49,7 @@ const (
 	metalLBEventFieldSelector = "reason=nodeAssigned"
 
 	// Regular expression for extracting node name from MetalLB events.
-	metalLBEventMessageRegexp = `^announcing from node "(\S+)"$`
+	metalLBEventMessageRegexp = `^announcing from node "(\S+)" with protocol "layer2"$`
 
 	// Label for sync error reason.
 	reasonMetricLabel = "reason"
